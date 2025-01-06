@@ -143,6 +143,9 @@ type MetricsConfig struct {
 	// Readers allow configuration of metric readers to emit metrics to
 	// any number of supported backends.
 	Readers []config.MetricReader `mapstructure:"readers"`
+
+	// Views allows configuration of the meter provider's views.
+	Views []config.View `mapstructure:"views,omitempty"`
 }
 
 // TracesConfig exposes the common Telemetry configuration for collector's internal spans.

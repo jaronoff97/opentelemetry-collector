@@ -5,9 +5,11 @@ package telemetry // import "go.opentelemetry.io/collector/service/telemetry"
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
+	"go.opentelemetry.io/contrib/config"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -16,12 +18,34 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/config/configtelemetry"
+	semconv "go.opentelemetry.io/collector/semconv/v1.13.0"
 	"go.opentelemetry.io/collector/service/telemetry/internal/otelinit"
 )
 
 const (
 	zapKeyTelemetryAddress = "address"
 	zapKeyTelemetryLevel   = "metrics level"
+)
+
+var (
+
+	// gRPC Instrumentation Name
+	GRPCInstrumentation = "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+
+	// http Instrumentation Name
+	HTTPInstrumentation = "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	// GRPCUnacceptableKeyValues is a list of high cardinality grpc attributes that should be filtered out.
+	GRPCUnacceptableKeyValues = []string{
+		semconv.AttributeNetSockPeerAddr,
+		semconv.AttributeNetSockPeerPort,
+		semconv.AttributeNetSockPeerName,
+	}
+
+	// HTTPUnacceptableKeyValues is a list of high cardinality http attributes that should be filtered out.
+	HTTPUnacceptableKeyValues = []string{
+		semconv.AttributeNetHostName,
+		semconv.AttributeNetHostPort,
+	}
 )
 
 type meterProvider struct {
@@ -34,6 +58,16 @@ type meterProviderSettings struct {
 	res               *resource.Resource
 	cfg               MetricsConfig
 	asyncErrorChannel chan error
+}
+
+func newerMeterProvider(set Settings, cfg Config) (metric.MeterProvider, error) {
+	if cfg.Metrics.Level == configtelemetry.LevelNone || len(cfg.Metrics.Readers) == 0 {
+		return noop.NewMeterProvider(), nil
+	}
+	if set.SDK != nil {
+		return set.SDK.MeterProvider(), nil
+	}
+	return nil, errors.New("no sdk set")
 }
 
 // newMeterProvider creates a new MeterProvider from Config.
@@ -88,4 +122,25 @@ func (mp *meterProvider) Shutdown(ctx context.Context) error {
 	mp.serverWG.Wait()
 
 	return errs
+}
+
+func disableConfigHighCardinalityViews() []config.View {
+	return []config.View{
+		{
+			Selector: &config.ViewSelector{
+				InstrumentName: &GRPCInstrumentation,
+			},
+			Stream: &config.ViewStream{
+				AttributeKeys: GRPCUnacceptableKeyValues,
+			},
+		},
+		{
+			Selector: &config.ViewSelector{
+				InstrumentName: &HTTPInstrumentation,
+			},
+			Stream: &config.ViewStream{
+				AttributeKeys: HTTPUnacceptableKeyValues,
+			},
+		},
+	}
 }

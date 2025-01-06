@@ -17,8 +17,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configtelemetry"
-	semconv "go.opentelemetry.io/collector/semconv/v1.18.0"
+	"go.opentelemetry.io/collector/featuregate"
+	semconv "go.opentelemetry.io/collector/semconv/v1.26.0"
 	"go.opentelemetry.io/collector/service/internal/promtest"
 	"go.opentelemetry.io/collector/service/internal/resource"
 	"go.opentelemetry.io/collector/service/telemetry/internal/otelinit"
@@ -85,6 +85,12 @@ func TestTelemetryInit(t *testing.T) {
 						"service_instance_id": testInstanceID,
 					},
 				},
+				"promhttp_metric_handler_errors_total": {
+					value: 0,
+					labels: map[string]string{
+						"cause": "encoding",
+					},
+				},
 			},
 		},
 		{
@@ -123,40 +129,46 @@ func TestTelemetryInit(t *testing.T) {
 						"service_instance_id": testInstanceID,
 					},
 				},
+				"promhttp_metric_handler_errors_total": {
+					value: 0,
+					labels: map[string]string{
+						"cause": "encoding",
+					},
+				},
 			},
 		},
 	} {
 		prom := promtest.GetAvailableLocalAddressPrometheus(t)
 		endpoint := fmt.Sprintf("http://%s:%d/metrics", *prom.Host, *prom.Port)
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &Config{
-				Metrics: MetricsConfig{
-					Level: configtelemetry.LevelDetailed,
-					Readers: []config.MetricReader{{
-						Pull: &config.PullMetricReader{Exporter: config.MetricExporter{Prometheus: prom}},
-					}},
-				},
-				Traces: TracesConfig{
-					Processors: []config.SpanProcessor{
-						{
-							Batch: &config.BatchSpanProcessor{
-								Exporter: config.SpanExporter{
-									Console: config.Console{},
-								},
-							},
-						},
-					},
-				},
-				Resource: map[string]*string{
-					semconv.AttributeServiceInstanceID: &testInstanceID,
-				},
+			genericConfig := createDefaultConfig()
+			cfg := genericConfig.(*Config)
+			if cfg.Resource == nil {
+				cfg.Resource = map[string]*string{}
 			}
-			set := meterProviderSettings{
-				res:               resource.New(component.NewDefaultBuildInfo(), cfg.Resource),
-				cfg:               cfg.Metrics,
-				asyncErrorChannel: make(chan error),
+			cfg.Resource[semconv.AttributeServiceInstanceID] = &testInstanceID
+			cfg.Metrics.Readers[0].Pull.Exporter.Prometheus.Host = prom.Host
+			cfg.Metrics.Readers[0].Pull.Exporter.Prometheus.Port = prom.Port
+
+			prevHighCardGate := disableHighCardinalityMetricsFeatureGate.IsEnabled()
+			require.NoError(t, featuregate.GlobalRegistry().Set(disableHighCardinalityMetricsFeatureGate.ID(), tt.disableHighCard))
+			defer func() {
+				// Restore previous value.
+				require.NoError(t, featuregate.GlobalRegistry().Set(disableHighCardinalityMetricsFeatureGate.ID(), prevHighCardGate))
+			}()
+
+			sch := semconv.SchemaURL
+			sdkRes := &config.Resource{
+				SchemaUrl:  &sch,
+				Attributes: getAttributes(cfg.Resource),
 			}
-			mp, err := newMeterProvider(set, tt.disableHighCard)
+			sdk, err := config.NewSDK(config.WithOpenTelemetryConfiguration(config.OpenTelemetryConfiguration{
+				Resource: sdkRes,
+				MeterProvider: &config.MeterProvider{
+					Readers: cfg.Metrics.Readers,
+				}}))
+			require.NoError(t, err)
+			mp, err := newerMeterProvider(Settings{SDK: &sdk}, *cfg)
 			require.NoError(t, err)
 			defer func() {
 				if prov, ok := mp.(interface{ Shutdown(context.Context) error }); ok {
@@ -172,7 +184,12 @@ func TestTelemetryInit(t *testing.T) {
 			for metricName, metricValue := range tt.expectedMetrics {
 				mf, present := metrics[metricName]
 				require.True(t, present, "expected metric %q was not present", metricName)
-				require.Len(t, mf.Metric, 1, "only one measure should exist for metric %q", metricName)
+				// This is a metric we get from the default prometheus setup, it has two values.
+				if metricName == "promhttp_metric_handler_errors_total" {
+					require.Len(t, mf.Metric, 2, "only two measure should exist for metric %q", metricName)
+				} else {
+					require.Len(t, mf.Metric, 1, "only one measure should exist for metric %q", metricName)
+				}
 
 				labels := make(map[string]string)
 				for _, pair := range mf.Metric[0].Label {
@@ -184,6 +201,15 @@ func TestTelemetryInit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func getAttributes(r map[string]*string) config.Attributes {
+	attrs := resource.New(component.NewDefaultBuildInfo(), r).Attributes()
+	toReturn := config.Attributes{}
+	for _, a := range attrs {
+		toReturn[string(a.Key)] = a.Value.AsString()
+	}
+	return toReturn
 }
 
 func createTestMetrics(t *testing.T, mp metric.MeterProvider) {

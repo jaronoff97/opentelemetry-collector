@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/featuregate"
-	"go.opentelemetry.io/collector/service/internal/resource"
 )
 
 var useLocalHostAsDefaultMetricsAddressFeatureGate = featuregate.GlobalRegistry().MustRegister(
@@ -77,15 +76,7 @@ func NewFactory() Factory {
 		}),
 		withMeterProvider(func(_ context.Context, set Settings, cfg component.Config) (metric.MeterProvider, error) {
 			c := *cfg.(*Config)
-			disableHighCard := disableHighCardinalityMetricsFeatureGate.IsEnabled()
-			return newMeterProvider(
-				meterProviderSettings{
-					res:               resource.New(set.BuildInfo, c.Resource),
-					cfg:               c.Metrics,
-					asyncErrorChannel: set.AsyncErrorChannel,
-				},
-				disableHighCard,
-			)
+			return newerMeterProvider(set, c)
 		}),
 	)
 }
@@ -94,6 +85,10 @@ func createDefaultConfig() component.Config {
 	metricsHost := "localhost"
 	if !useLocalHostAsDefaultMetricsAddressFeatureGate.IsEnabled() {
 		metricsHost = ""
+	}
+	views := []config.View{}
+	if disableHighCardinalityMetricsFeatureGate.IsEnabled() {
+		views = disableConfigHighCardinalityViews()
 	}
 
 	return &Config{
@@ -115,11 +110,18 @@ func createDefaultConfig() component.Config {
 		},
 		Metrics: MetricsConfig{
 			Level: configtelemetry.LevelNormal,
+			Views: views,
 			Readers: []config.MetricReader{
 				{
 					Pull: &config.PullMetricReader{Exporter: config.MetricExporter{Prometheus: &config.Prometheus{
 						Host: &metricsHost,
 						Port: newPtr(8888),
+						// Set the options for the collector
+						WithoutUnits:      newPtr(true),
+						WithoutScopeInfo:  newPtr(true),
+						WithoutTypeSuffix: newPtr(true),
+						// Question... in otelinit, this is set to just a return true?
+						WithResourceConstantLabels: nil,
 					}}},
 				},
 			},
@@ -127,6 +129,6 @@ func createDefaultConfig() component.Config {
 	}
 }
 
-func newPtr[T int | string](str T) *T {
+func newPtr[T int | string | bool](str T) *T {
 	return &str
 }

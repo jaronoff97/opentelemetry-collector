@@ -43,6 +43,20 @@ func TestUnmarshalEmptyMetricReaders(t *testing.T) {
 	require.Empty(t, cfg.(*Config).Metrics.Readers)
 }
 
+func TestUnmarshalEmptyViews(t *testing.T) {
+	prev := disableAddressFieldForInternalTelemetryFeatureGate.IsEnabled()
+	require.NoError(t, featuregate.GlobalRegistry().Set(disableAddressFieldForInternalTelemetryFeatureGate.ID(), false))
+	defer func() {
+		// Restore previous value.
+		require.NoError(t, featuregate.GlobalRegistry().Set(disableAddressFieldForInternalTelemetryFeatureGate.ID(), prev))
+	}()
+	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config_empty_views.yaml"))
+	require.NoError(t, err)
+	cfg := NewFactory().CreateDefaultConfig()
+	require.NoError(t, cm.Unmarshal(&cfg))
+	require.Empty(t, cfg.(*Config).Metrics.Views)
+}
+
 func TestUnmarshalConfigDeprecatedAddress(t *testing.T) {
 	prev := disableAddressFieldForInternalTelemetryFeatureGate.IsEnabled()
 	require.NoError(t, featuregate.GlobalRegistry().Set(disableAddressFieldForInternalTelemetryFeatureGate.ID(), false))

@@ -21,31 +21,58 @@ import (
 
 func TestDefaultConfig(t *testing.T) {
 	tests := []struct {
-		expected string
-		gate     bool
+		expected            string
+		defaultAddressGate  bool
+		disableHighCardGate bool
 	}{
 		{
-			expected: "localhost",
-			gate:     true,
+			expected:            "localhost",
+			defaultAddressGate:  true,
+			disableHighCardGate: false,
 		},
 		{
-			expected: "",
-			gate:     false,
+			expected:            "",
+			defaultAddressGate:  false,
+			disableHighCardGate: false,
+		},
+		{
+			expected:            "localhost",
+			defaultAddressGate:  true,
+			disableHighCardGate: true,
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run("UseLocalHostAsDefaultMetricsAddress/"+strconv.FormatBool(tt.gate), func(t *testing.T) {
+		t.Run("UseLocalHostAsDefaultMetricsAddress/"+strconv.FormatBool(tt.defaultAddressGate), func(t *testing.T) {
 			prev := useLocalHostAsDefaultMetricsAddressFeatureGate.IsEnabled()
-			require.NoError(t, featuregate.GlobalRegistry().Set(useLocalHostAsDefaultMetricsAddressFeatureGate.ID(), tt.gate))
+			require.NoError(t, featuregate.GlobalRegistry().Set(useLocalHostAsDefaultMetricsAddressFeatureGate.ID(), tt.defaultAddressGate))
 			defer func() {
 				// Restore previous value.
 				require.NoError(t, featuregate.GlobalRegistry().Set(useLocalHostAsDefaultMetricsAddressFeatureGate.ID(), prev))
+			}()
+			prevHighCardGate := disableHighCardinalityMetricsFeatureGate.IsEnabled()
+			require.NoError(t, featuregate.GlobalRegistry().Set(disableHighCardinalityMetricsFeatureGate.ID(), tt.disableHighCardGate))
+			defer func() {
+				// Restore previous value.
+				require.NoError(t, featuregate.GlobalRegistry().Set(disableHighCardinalityMetricsFeatureGate.ID(), prevHighCardGate))
 			}()
 			cfg := NewFactory().CreateDefaultConfig()
 			require.Len(t, cfg.(*Config).Metrics.Readers, 1)
 			assert.Equal(t, tt.expected, *cfg.(*Config).Metrics.Readers[0].Pull.Exporter.Prometheus.Host)
 			assert.Equal(t, 8888, *cfg.(*Config).Metrics.Readers[0].Pull.Exporter.Prometheus.Port)
+			assert.Equal(t, true, *cfg.(*Config).Metrics.Readers[0].Pull.Exporter.Prometheus.WithoutUnits)
+			assert.Equal(t, true, *cfg.(*Config).Metrics.Readers[0].Pull.Exporter.Prometheus.WithoutScopeInfo)
+			assert.Equal(t, true, *cfg.(*Config).Metrics.Readers[0].Pull.Exporter.Prometheus.WithoutTypeSuffix)
+
+			if tt.disableHighCardGate {
+				assert.Len(t, cfg.(*Config).Metrics.Views, 2)
+				assert.Equal(t, GRPCInstrumentation, *cfg.(*Config).Metrics.Views[0].Selector.InstrumentName)
+				assert.Equal(t, GRPCUnacceptableKeyValues, cfg.(*Config).Metrics.Views[0].Stream.AttributeKeys)
+				assert.Equal(t, HTTPInstrumentation, *cfg.(*Config).Metrics.Views[1].Selector.InstrumentName)
+				assert.Equal(t, HTTPUnacceptableKeyValues, cfg.(*Config).Metrics.Views[1].Stream.AttributeKeys)
+			} else {
+				assert.Empty(t, cfg.(*Config).Metrics.Views)
+			}
 		})
 	}
 }
